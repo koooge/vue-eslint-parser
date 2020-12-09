@@ -7,7 +7,7 @@ import * as path from "path"
 import * as AST from "./ast"
 import { LocationCalculator } from "./common/location-calculator"
 import { HTMLParser, HTMLTokenizer } from "./html"
-import { parseScript, parseScriptElement } from "./script"
+import { parseScript, parseScriptElement, parseScriptElements } from "./script"
 import * as services from "./parser-services"
 import type { ParserOptions } from "./common/parser-options"
 
@@ -101,11 +101,12 @@ export function parseForESLint(
         const skipParsingScript = options.parser === false
         const tokenizer = new HTMLTokenizer(code, options)
         const rootAST = new HTMLParser(tokenizer, options).parse()
+
         locationCalculator = new LocationCalculator(
             tokenizer.gaps,
             tokenizer.lineTerminators,
         )
-        const script = rootAST.children.find(isScriptElement)
+        const scripts = rootAST.children.filter(isScriptElement)
         const template = rootAST.children.find(isTemplateElement)
         const templateLang = getLang(template, "html")
         const concreteInfo: AST.HasConcreteInfo = {
@@ -118,10 +119,12 @@ export function parseForESLint(
                 ? Object.assign(template, concreteInfo)
                 : undefined
 
-        if (skipParsingScript || script == null) {
+        if (skipParsingScript || !scripts.length) {
             result = parseScript("", options)
+        } else if (scripts.length > 1) {
+            result = parseScriptElements(scripts, code, options)
         } else {
-            result = parseScriptElement(script, locationCalculator, options)
+            result = parseScriptElement(scripts[0], locationCalculator, options)
         }
 
         result.ast.templateBody = templateBody

@@ -542,11 +542,10 @@ export function parseScriptElement(
     parserOptions: ParserOptions,
 ): ESLintExtendedProgram {
     const text = node.children[0]
-    const offset =
+    const { code, offset } =
         text != null && text.type === "VText"
-            ? text.range[0]
-            : node.startTag.range[1]
-    const code = text != null && text.type === "VText" ? text.value : ""
+            ? { code: text.value, offset: text.range[0] }
+            : { code: "", offset: node.startTag.range[1] }
     const locationCalculator = globalLocationCalculator.getSubCalculatorAfter(
         offset,
     )
@@ -558,14 +557,12 @@ export function parseScriptElement(
         const startTag = node.startTag
         const endTag = node.endTag
 
-        if (startTag != null) {
-            result.ast.tokens.unshift({
-                type: "Punctuator",
-                range: startTag.range,
-                loc: startTag.loc,
-                value: "<script>",
-            })
-        }
+        result.ast.tokens.unshift({
+            type: "Punctuator",
+            range: startTag.range,
+            loc: startTag.loc,
+            value: "<script>",
+        })
         if (endTag != null) {
             result.ast.tokens.push({
                 type: "Punctuator",
@@ -577,6 +574,111 @@ export function parseScriptElement(
     }
 
     return result
+}
+
+/**
+ * Parse the source code of the given `<script>` elements.
+ * @param nodes The `<script>` elements to parse.
+ * @param code The source code of SFC.
+ * @param parserOptions The parser options.
+ * @returns The result of parsing.
+ */
+export function parseScriptElements(
+    nodes: VElement[],
+    code: string,
+    parserOptions: ParserOptions,
+): ESLintExtendedProgram {
+    let scriptCode = ""
+    let startOffset = 0
+    const tagTokens: Token[] = []
+
+    let firstScriptText: Token | null = null
+    for (const node of nodes) {
+        const scriptText = node.children[0]
+        if (scriptText.type === "VText") {
+            firstScriptText ||= scriptText
+            const scriptContent = code.slice(...scriptText.range)
+
+            const spaces = code
+                .slice(startOffset, scriptText.range[0])
+                .replace(/[^\n\r\u2028\u2029]/gu, " ")
+            scriptCode += spaces + scriptContent
+            startOffset = scriptText.range[1]
+
+            const startTag = node.startTag
+            const endTag = node.endTag
+            tagTokens.push({
+                type: "Punctuator",
+                range: startTag.range,
+                loc: startTag.loc,
+                value: "<script>",
+            })
+            if (endTag != null) {
+                tagTokens.push({
+                    type: "Punctuator",
+                    range: endTag.range,
+                    loc: endTag.loc,
+                    value: "</script>",
+                })
+            }
+        }
+    }
+
+    const result = parseScript(scriptCode, parserOptions)
+
+    if (result.ast.comments != null) {
+        for (const comment of result.ast.comments) {
+            for (const tagToken of tagTokens) {
+                checkIntersect(tagToken, comment)
+            }
+        }
+    }
+    if (result.ast.tokens != null) {
+        const newTokens: Token[] = []
+        let tagToken = tagTokens.shift()
+        for (const token of result.ast.tokens) {
+            while (tagToken && tagToken.range[0] < token.range[0]) {
+                newTokens.push(tagToken)
+                tagToken = tagTokens.shift()
+            }
+            checkIntersect(tagToken, token)
+            newTokens.push(token)
+        }
+        if (tagToken) {
+            newTokens.push(tagToken, ...tagTokens)
+        }
+        result.ast.tokens = newTokens
+    }
+
+    result.ast.start = firstScriptText!.range[0]
+
+    return result
+
+    /**
+     * Check if the tokens intersect.
+     */
+    function checkIntersect(tagToken: Token | undefined, token: Token) {
+        if (tagToken) {
+            if (
+                token.range[0] < tagToken.range[0] &&
+                tagToken.range[0] < token.range[1]
+            ) {
+                throw new ParseError(
+                    token.type === "Template"
+                        ? "Unterminated template literal"
+                        : token.type === "Block"
+                        ? "Unterminated comment"
+                        : token.type === "String"
+                        ? "Unterminated string constant"
+                        : `Unterminated '${token.type}'`,
+                    undefined,
+                    tagToken.range[0],
+                    tagToken.loc.start.line,
+                    tagToken.loc.start.column,
+                )
+            }
+        }
+    }
 }
 
 /**
